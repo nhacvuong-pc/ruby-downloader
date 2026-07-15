@@ -1,0 +1,7 @@
+bin/
+obj/ 
+downloads/*
+!downloads/.gitkeep
+debug/*
+!debug/.gitkeep
+*.part
