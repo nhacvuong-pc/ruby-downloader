@@ -44,6 +44,69 @@ dotnet run -- "https://www.instagram.com/reel/SHORTCODE/" "./downloads"
 Tham so thu hai la thu muc dau ra. Video va thumbnail (neu nen tang cung cap)
 duoc luu theo ten `username-videoUid.mp4` va `username-videoUid.jpg`.
 
+## JSON response
+
+Process chỉ ghi một JSON object trên `stdout` sau khi hoàn tất. Service gọi bên
+ngoài nên chờ process kết thúc, đọc toàn bộ `stdout`, parse JSON và kiểm tra cả
+`success` lẫn exit code.
+
+```json
+{"schema_version":1,"success":true,"platform":"instagram","media_type":"video","source_url":"https://www.instagram.com/reel/SHORTCODE/","username":"example","media_id":"SHORTCODE","files":[{"type":"video","path":"D:\\downloads\\example-SHORTCODE.mp4","file_name":"example-SHORTCODE.mp4","content_type":"video/mp4","size_bytes":123456},{"type":"thumbnail","path":"D:\\downloads\\example-SHORTCODE.jpg","file_name":"example-SHORTCODE.jpg","content_type":"image/jpeg","size_bytes":12345}],"timings":{"resolve_ms":2500,"download_ms":900,"total_ms":3700},"error":null}
+```
+
+Exit code `0` là thành công. Khi thất bại, `success` là `false`, `files` rỗng và
+`error` chứa `code` cùng `message`. Các code hiện có gồm `INVALID_INPUT`,
+`UNSUPPORTED_URL`, `TIMEOUT`, `PLAYWRIGHT_ERROR`, `HTTP_ERROR`, `CANCELLED` và
+`PROCESSING_ERROR`.
+
+JSON chỉ được ghi sau khi Chromium, page và browser context đã đóng. Service cha
+vẫn nên chờ process exit rồi mới parse `stdout`. Khi HTTP request bị hủy hoặc quá
+timeout, dừng cả process tree để không để Chromium chạy nền:
+
+```csharp
+using var process = new Process
+{
+    StartInfo = new ProcessStartInfo
+    {
+        FileName = "dotnet",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    }
+};
+
+process.StartInfo.ArgumentList.Add("RubyDownloader.dll");
+process.StartInfo.ArgumentList.Add(mediaUrl);
+process.StartInfo.ArgumentList.Add(outputDirectory);
+
+process.Start();
+Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
+try
+{
+    await process.WaitForExitAsync(cancellationToken);
+}
+catch (OperationCanceledException)
+{
+    if (!process.HasExited)
+    {
+        process.Kill(entireProcessTree: true);
+        await process.WaitForExitAsync(CancellationToken.None);
+    }
+
+    throw;
+}
+
+string json = await stdoutTask;
+string stderr = await stderrTask;
+```
+
+Để giảm tải server, giới hạn số Chromium chạy đồng thời bằng `SemaphoreSlim`
+hoặc hàng đợi background; không khởi chạy một process không giới hạn cho mỗi HTTP
+request.
+
 Instagram hỗ trợ nội dung video công khai dạng Reel, Post và IGTV. Shortcode
 trong URL được dùng làm `videoUid`. Nội dung riêng tư hoặc bắt buộc đăng nhập
 không được hỗ trợ.

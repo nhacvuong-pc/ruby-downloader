@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -22,7 +21,6 @@ internal sealed class InstagramService
         IPage page,
         string instagramUrl)
     {
-        Stopwatch stopwatch = Stopwatch.StartNew();
         var candidates = new ConcurrentDictionary<string, VideoCandidate>(
             StringComparer.OrdinalIgnoreCase);
 
@@ -114,10 +112,6 @@ internal sealed class InstagramService
                     "The Instagram post is image-only, but no downloadable image URL was found.");
             }
 
-            stopwatch.Stop();
-            Console.WriteLine(
-                $"Instagram resolve time: {stopwatch.Elapsed.TotalSeconds:F2}s");
-
             return new VideoInfo(
                 page.Url,
                 firstImageUrl,
@@ -159,12 +153,6 @@ internal sealed class InstagramService
                 "No public Instagram video resource was found. " +
                 "The post may require login or may contain images only.");
         }
-
-        stopwatch.Stop();
-        Console.WriteLine(
-            $"Selected bitrate     : {FormatBitrate(GetBitrate(bestCandidate.ResourceUrl))}");
-        Console.WriteLine(
-            $"Instagram resolve time: {stopwatch.Elapsed.TotalSeconds:F2}s");
 
         return new VideoInfo(
             page.Url,
@@ -1038,13 +1026,6 @@ internal sealed class InstagramService
     private static string? NullIfEmpty(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value;
-    }
-
-    private static string FormatBitrate(long? bitrate)
-    {
-        return bitrate.HasValue
-            ? $"{bitrate.Value / 1_000_000d:F2} Mbps"
-            : "unknown";
     }
 
     private sealed record VideoCandidate(

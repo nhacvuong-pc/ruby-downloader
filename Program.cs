@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Playwright;
 using RubyDownloader.Config;
 using RubyDownloader.Models;
@@ -8,317 +9,318 @@ namespace RubyDownloader;
 
 internal static class Program
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        WriteIndented = false
+    };
+
     private static async Task<int> Main(string[] args)
     {
+        Stopwatch totalStopwatch = Stopwatch.StartNew();
+        string? mediaUrl = args.Length > 0 ? args[0] : null;
+        string? platform = GetPlatform(mediaUrl);
+        long resolveMs = 0;
+        long downloadMs = 0;
+
         try
         {
             EnvLoader.Load();
-
-            AppSettings settings =
-                AppSettings.Load();
-
-            string? mediaUrl = args.Length > 0
-                ? args[0]
-                : ReadMediaUrl();
+            AppSettings settings = AppSettings.Load();
 
             if (string.IsNullOrWhiteSpace(mediaUrl))
             {
-                Console.Error.WriteLine(
-                    "URL TikTok/Instagram không được để trống.");
-
-                return 1;
+                return WriteFailure(
+                    1, "INVALID_INPUT",
+                    "URL TikTok/Instagram không được để trống.",
+                    mediaUrl, platform, resolveMs, downloadMs, totalStopwatch);
             }
 
-            bool isTikTok = IsTikTokUrl(mediaUrl);
-            bool isInstagram = IsInstagramUrl(mediaUrl);
-
-            if (!isTikTok && !isInstagram)
+            if (platform is null)
             {
-                Console.Error.WriteLine(
-                    "URL không phải link TikTok hoặc Instagram hợp lệ.");
-
-                return 1;
+                return WriteFailure(
+                    1, "UNSUPPORTED_URL",
+                    "URL không phải link TikTok hoặc Instagram hợp lệ.",
+                    mediaUrl, platform, resolveMs, downloadMs, totalStopwatch);
             }
 
-            string outputDirectory = args.Length > 1
-                ? args[1]
-                : settings.DownloadPath;
+            string outputDirectory = Path.GetFullPath(
+                args.Length > 1 ? args[1] : settings.DownloadPath);
+            ProcessResponse successResponse;
 
-            outputDirectory =
-                Path.GetFullPath(outputDirectory);
-
-            Console.WriteLine(
-                $"Output folder : {outputDirectory}");
-
-            await using var browserService =
-                new BrowserService(settings);
-
-            await using BrowserSession session =
-                await browserService.CreateSessionAsync();
-
-            var downloadService =
-                new DownloadService(settings);
-
-            string platformName = isTikTok
-                ? "TikTok"
-                : "Instagram";
-
-            Console.WriteLine();
-            Console.WriteLine(
-                $"Đang mở {platformName} bằng Chromium của Playwright...");
-
-            VideoInfo videoInfo;
-
-            if (isTikTok)
+            await using (var browserService = new BrowserService(settings))
             {
-                videoInfo = await new TikTokService(settings).ResolveAsync(
-                    session.Page,
-                    mediaUrl);
-            }
-            else
-            {
-                videoInfo = await new InstagramService(settings).ResolveAsync(
-                    session.Page,
-                    mediaUrl);
-            }
+                await using BrowserSession session =
+                    await browserService.CreateSessionAsync();
 
-            string baseFileName = SanitizeFileName(
-                $"{videoInfo.Username}-{videoInfo.VideoId}");
+                var downloadService = new DownloadService(settings);
+                Stopwatch resolveStopwatch = Stopwatch.StartNew();
 
-            string videoOutputPath = Path.Combine(
-                outputDirectory,
-                baseFileName + ".mp4");
+                VideoInfo mediaInfo = platform == "tiktok"
+                    ? await new TikTokService(settings).ResolveAsync(
+                        session.Page,
+                        mediaUrl)
+                    : await new InstagramService(settings).ResolveAsync(
+                        session.Page,
+                        mediaUrl);
 
-            string thumbnailOutputPath = Path.Combine(
-                outputDirectory,
-                baseFileName + ".jpg");
+                resolveStopwatch.Stop();
+                resolveMs = resolveStopwatch.ElapsedMilliseconds;
 
-            if (!videoInfo.IsVideo)
-            {
-                IReadOnlyList<string> imageUrls =
-                    videoInfo.ImageUrls ?? [];
+                string baseFileName = SanitizeFileName(
+                    $"{mediaInfo.Username}-{mediaInfo.VideoId}");
+                var files = new List<OutputFileInfo>();
+                Stopwatch downloadStopwatch = Stopwatch.StartNew();
 
-                for (int index = 0; index < imageUrls.Count; index++)
+                if (mediaInfo.IsVideo)
                 {
-                    string imageOutputPath = imageUrls.Count == 1
-                        ? thumbnailOutputPath
-                        : Path.Combine(
-                            outputDirectory,
-                            $"{baseFileName}-{index + 1}.jpg");
-
-                    DownloadResult imageResult =
-                        (await downloadService.DownloadThumbnailAsync(
-                            session.Context,
-                            videoInfo with
-                            {
-                                ThumbnailUrl = imageUrls[index]
-                            },
-                            imageOutputPath))!;
-
-                    Console.WriteLine(
-                        $"Image        : {imageResult.OutputPath}");
+                    await DownloadVideoAsync(
+                        platform,
+                        outputDirectory,
+                        baseFileName,
+                        session.Context,
+                        downloadService,
+                        mediaInfo,
+                        files);
+                }
+                else
+                {
+                    await DownloadImagesAsync(
+                        outputDirectory,
+                        baseFileName,
+                        session.Context,
+                        downloadService,
+                        mediaInfo,
+                        files);
                 }
 
-                return 0;
+                downloadStopwatch.Stop();
+                downloadMs = downloadStopwatch.ElapsedMilliseconds;
+
+                successResponse = new ProcessResponse(
+                    SchemaVersion: 1,
+                    Success: true,
+                    Platform: platform,
+                    MediaType: mediaInfo.IsVideo ? "video" : "image",
+                    SourceUrl: mediaUrl,
+                    Username: mediaInfo.Username,
+                    MediaId: mediaInfo.VideoId,
+                    Files: files,
+                    Timings: new TimingInfo(resolveMs, downloadMs, 0),
+                    Error: null);
             }
 
-            Console.WriteLine();
-            Console.WriteLine(
-                "Đang tải video bằng BrowserContext...");
-
-            Stopwatch downloadStopwatch = Stopwatch.StartNew();
-
-            DownloadResult result =
-                await downloadService.DownloadAsync(
-                    session.Context,
-                    videoInfo,
-                    videoOutputPath);
-
-            downloadStopwatch.Stop();
-
-            Console.WriteLine();
-            Console.WriteLine(
-                "Tải video thành công.");
-
-            Console.WriteLine(
-                $"File         : {result.OutputPath}");
-
-            Console.WriteLine(
-                $"Kích thước   : {FormatSize(result.FileSize)}");
-
-            Console.WriteLine(
-                $"Download time: {downloadStopwatch.Elapsed.TotalSeconds:F2}s");
-
-            DownloadResult? thumbnailResult;
-
-            if (isInstagram)
+            // Browser/context cleanup is complete before stdout receives JSON.
+            totalStopwatch.Stop();
+            successResponse = successResponse with
             {
-                thumbnailResult =
-                    await downloadService.GenerateVideoThumbnailAsync(
-                        session.Context,
-                        result.OutputPath,
-                        thumbnailOutputPath);
-            }
-            else
-            {
-                thumbnailResult =
-                    await downloadService.DownloadThumbnailAsync(
-                        session.Context,
-                        videoInfo,
-                        thumbnailOutputPath);
-            }
+                Timings = new TimingInfo(
+                    resolveMs,
+                    downloadMs,
+                    totalStopwatch.ElapsedMilliseconds)
+            };
 
-            Console.WriteLine(
-                thumbnailResult is null
-                    ? "Thumbnail    : unavailable"
-                    : $"Thumbnail    : {thumbnailResult.OutputPath}");
-
-            return 0;
+            return WriteResponse(successResponse, 0);
+        }
+        catch (System.TimeoutException ex)
+        {
+            return WriteFailure(
+                3, "TIMEOUT", ex.Message, mediaUrl, platform,
+                resolveMs, downloadMs, totalStopwatch);
         }
         catch (PlaywrightException ex)
         {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                $"Lỗi Playwright: {ex.Message}");
-
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                "Hãy build project rồi cài Chromium:");
-
-            Console.Error.WriteLine(
-                @"powershell -ExecutionPolicy Bypass -File .\bin\Debug\net8.0\playwright.ps1 install chromium");
-
-            return 2;
-        }
-        catch (TimeoutException ex)
-        {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                $"Hết thời gian: {ex.Message}");
-
-            return 3;
+            return WriteFailure(
+                2, "PLAYWRIGHT_ERROR", ex.Message, mediaUrl, platform,
+                resolveMs, downloadMs, totalStopwatch);
         }
         catch (HttpRequestException ex)
         {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                $"Lỗi HTTP: {ex.Message}");
-
-            return 4;
+            return WriteFailure(
+                4, "HTTP_ERROR", ex.Message, mediaUrl, platform,
+                resolveMs, downloadMs, totalStopwatch);
         }
         catch (OperationCanceledException)
         {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                "Quá trình đã bị hủy hoặc hết thời gian.");
-
-            return 5;
+            return WriteFailure(
+                5, "CANCELLED",
+                "Quá trình đã bị hủy hoặc hết thời gian.",
+                mediaUrl, platform, resolveMs, downloadMs, totalStopwatch);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine(
-                $"Lỗi: {ex.Message}");
-
-            return 6;
+            return WriteFailure(
+                6, "PROCESSING_ERROR", ex.Message, mediaUrl, platform,
+                resolveMs, downloadMs, totalStopwatch);
         }
     }
 
-    private static string? ReadMediaUrl()
+    private static async Task DownloadVideoAsync(
+        string platform,
+        string outputDirectory,
+        string baseFileName,
+        IBrowserContext browserContext,
+        DownloadService downloadService,
+        VideoInfo mediaInfo,
+        List<OutputFileInfo> files)
     {
-        Console.Write(
-            "Nhập URL TikTok hoặc Instagram: ");
+        string videoPath = Path.Combine(
+            outputDirectory,
+            baseFileName + ".mp4");
+        string thumbnailPath = Path.Combine(
+            outputDirectory,
+            baseFileName + ".jpg");
 
-        return Console.ReadLine();
+        DownloadResult videoResult = await downloadService.DownloadAsync(
+            browserContext,
+            mediaInfo,
+            videoPath);
+
+        files.Add(CreateFileInfo("video", videoResult, "video/mp4"));
+
+        DownloadResult? thumbnailResult = platform == "instagram"
+            ? await downloadService.GenerateVideoThumbnailAsync(
+                browserContext,
+                videoResult.OutputPath,
+                thumbnailPath)
+            : await downloadService.DownloadThumbnailAsync(
+                browserContext,
+                mediaInfo,
+                thumbnailPath);
+
+        if (thumbnailResult is not null)
+        {
+            files.Add(CreateFileInfo(
+                "thumbnail",
+                thumbnailResult,
+                "image/jpeg"));
+        }
     }
 
-    private static bool IsTikTokUrl(
-        string url)
+    private static async Task DownloadImagesAsync(
+        string outputDirectory,
+        string baseFileName,
+        IBrowserContext browserContext,
+        DownloadService downloadService,
+        VideoInfo mediaInfo,
+        List<OutputFileInfo> files)
     {
-        if (!Uri.TryCreate(
-                url,
-                UriKind.Absolute,
-                out Uri? uri))
+        IReadOnlyList<string> imageUrls = mediaInfo.ImageUrls ?? [];
+
+        if (imageUrls.Count == 0)
         {
-            return false;
+            throw new InvalidOperationException(
+                "Không tìm thấy URL ảnh Instagram hợp lệ.");
         }
 
-        if (uri.Scheme != Uri.UriSchemeHttp &&
-            uri.Scheme != Uri.UriSchemeHttps)
+        for (int index = 0; index < imageUrls.Count; index++)
         {
-            return false;
+            string imageFileName = imageUrls.Count == 1
+                ? baseFileName + ".jpg"
+                : $"{baseFileName}-{index + 1}.jpg";
+            string imagePath = Path.Combine(outputDirectory, imageFileName);
+
+            DownloadResult imageResult =
+                await downloadService.DownloadThumbnailAsync(
+                    browserContext,
+                    mediaInfo with { ThumbnailUrl = imageUrls[index] },
+                    imagePath)
+                ?? throw new InvalidOperationException(
+                    "Không tìm thấy URL ảnh Instagram hợp lệ.");
+
+            files.Add(CreateFileInfo("image", imageResult, "image/jpeg"));
         }
-
-        string host =
-            uri.Host.ToLowerInvariant();
-
-        return host == "tiktok.com" ||
-               host.EndsWith(
-                   ".tiktok.com",
-                   StringComparison.OrdinalIgnoreCase) ||
-               host == "tiktokv.com" ||
-               host.EndsWith(
-                   ".tiktokv.com",
-                   StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsInstagramUrl(string url)
+    private static OutputFileInfo CreateFileInfo(
+        string type,
+        DownloadResult result,
+        string contentType)
+    {
+        return new OutputFileInfo(
+            type,
+            result.OutputPath,
+            Path.GetFileName(result.OutputPath),
+            contentType,
+            result.FileSize);
+    }
+
+    private static int WriteFailure(
+        int exitCode,
+        string errorCode,
+        string message,
+        string? sourceUrl,
+        string? platform,
+        long resolveMs,
+        long downloadMs,
+        Stopwatch totalStopwatch)
+    {
+        totalStopwatch.Stop();
+
+        return WriteResponse(
+            new ProcessResponse(
+                SchemaVersion: 1,
+                Success: false,
+                Platform: platform,
+                MediaType: null,
+                SourceUrl: sourceUrl,
+                Username: null,
+                MediaId: null,
+                Files: [],
+                Timings: new TimingInfo(
+                    resolveMs,
+                    downloadMs,
+                    totalStopwatch.ElapsedMilliseconds),
+                Error: new ProcessError(errorCode, message)),
+            exitCode);
+    }
+
+    private static int WriteResponse(ProcessResponse response, int exitCode)
+    {
+        Console.Out.WriteLine(JsonSerializer.Serialize(response, JsonOptions));
+        return exitCode;
+    }
+
+    private static string? GetPlatform(string? url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) ||
             (uri.Scheme != Uri.UriSchemeHttp &&
              uri.Scheme != Uri.UriSchemeHttps))
         {
-            return false;
+            return null;
         }
 
         string host = uri.Host.ToLowerInvariant();
 
-        return host == "instagram.com" ||
-               host.EndsWith(
-                   ".instagram.com",
-                   StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string FormatSize(
-        long bytes)
-    {
-        string[] units =
-        [
-            "B",
-            "KB",
-            "MB",
-            "GB",
-            "TB"
-        ];
-
-        double size = bytes;
-        int unitIndex = 0;
-
-        while (size >= 1024 &&
-               unitIndex < units.Length - 1)
+        if (host == "tiktok.com" ||
+            host.EndsWith(".tiktok.com", StringComparison.OrdinalIgnoreCase) ||
+            host == "tiktokv.com" ||
+            host.EndsWith(".tiktokv.com", StringComparison.OrdinalIgnoreCase))
         {
-            size /= 1024;
-            unitIndex++;
+            return "tiktok";
         }
 
-        return $"{size:F2} {units[unitIndex]}";
+        if (host == "instagram.com" ||
+            host.EndsWith(".instagram.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return "instagram";
+        }
+
+        return null;
     }
 
     private static string SanitizeFileName(string value)
     {
         char[] invalidCharacters = Path.GetInvalidFileNameChars();
-
         string sanitized = new(
             value.Select(character =>
-                    invalidCharacters.Contains(character)
-                        ? '_'
-                        : character)
+                    invalidCharacters.Contains(character) ? '_' : character)
                 .ToArray());
 
         sanitized = sanitized.Trim().TrimEnd('.');
 
         return string.IsNullOrWhiteSpace(sanitized)
-            ? "social-video"
+            ? "social-media"
             : sanitized;
     }
 }

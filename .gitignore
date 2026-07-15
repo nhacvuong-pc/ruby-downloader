@@ -1,5 +1,7 @@
 bin/
-obj/ 
+obj/
+.build/
+trace.txt
 downloads/*
 !downloads/.gitkeep
 debug/*

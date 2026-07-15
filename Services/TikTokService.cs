@@ -167,9 +167,6 @@ internal sealed class TikTokService
 
         resolveStopwatch.Stop();
 
-        Console.WriteLine(
-            $"Resolve time   : {resolveStopwatch.Elapsed.TotalSeconds:F2}s");
-
         return new VideoInfo(
             page.Url,
             bestCandidate.ResourceUrl,
@@ -746,10 +743,9 @@ internal sealed class TikTokService
                     $"{timestamp}-page.html"),
                 html);
         }
-        catch (Exception ex)
+        catch
         {
-            Console.Error.WriteLine(
-                $"Không lưu được debug: {ex.Message}");
+            // Debug artifacts are best-effort only.
         }
     }
 
