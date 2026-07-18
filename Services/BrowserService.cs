@@ -35,7 +35,10 @@ internal sealed class BrowserService : IAsyncDisposable
                     "--disable-sync",
                     "--metrics-recording-only",
                     "--no-default-browser-check",
-                    "--no-first-run"
+                    "--no-first-run",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-gpu"
                 ]
             });
 

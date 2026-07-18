@@ -1,6 +1,6 @@
 namespace RubyDownloader.Models;
 
-internal sealed record ProcessResponse(
+public sealed record ProcessResponse(
     int SchemaVersion,
     bool Success,
     string? Platform,
@@ -12,18 +12,18 @@ internal sealed record ProcessResponse(
     TimingInfo Timings,
     ProcessError? Error);
 
-internal sealed record OutputFileInfo(
+public sealed record OutputFileInfo(
     string Type,
     string Path,
     string FileName,
     string ContentType,
     long SizeBytes);
 
-internal sealed record TimingInfo(
+public sealed record TimingInfo(
     long ResolveMs,
     long DownloadMs,
     long TotalMs);
 
-internal sealed record ProcessError(
+public sealed record ProcessError(
     string Code,
     string Message);

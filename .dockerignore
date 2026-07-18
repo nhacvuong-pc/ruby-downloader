@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.build
+bin
+obj
+debug
+downloads
+*.part
+Dockerfile*
+compose*.yml
+README.md

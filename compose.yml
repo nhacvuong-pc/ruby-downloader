@@ -1,0 +1,17 @@
+services:
+  ruby-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ruby-downloader:local
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      PLAYWRIGHT_HEADLESS: "true"
+      DOWNLOAD_PATH: /app/downloads
+      Logging__LogLevel__Default: Information
+    volumes:
+      - ./downloads:/app/downloads
+    ports:
+      - "8080:8080"
